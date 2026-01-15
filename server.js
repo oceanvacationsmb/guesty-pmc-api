@@ -1,169 +1,145 @@
 import express from "express";
-import fetch from "node-fetch";
 import cors from "cors";
+import fetch from "node-fetch";
 
 const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
+
 const CLIENT_ID = process.env.GUESTY_CLIENT_ID;
 const CLIENT_SECRET = process.env.GUESTY_CLIENT_SECRET;
 
-// Block any non-GET requests to YOUR API (extra safety)
-app.use((req, res, next) => {
-  const m = req.method.toUpperCase();
-  if (m !== "GET" && m !== "HEAD" && m !== "OPTIONS") {
-    return res.status(405).send("Method not allowed");
-  }
-  next();
-});
-
-app.get("/", (req, res) => res.send("Guesty PMC API running"));
-
-// ---------- Token cache + single-flight lock ----------
-let cachedToken = null;
-let cachedTokenExpiresAt = 0; // unix ms
-let tokenInFlight = null; // Promise<string> | null
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+if (!CLIENT_ID || !CLIENT_SECRET) {
+  console.warn("Missing GUESTY_CLIENT_ID or GUESTY_CLIENT_SECRET env vars");
 }
 
-async function fetchTokenWithBackoff() {
-  const url = "https://open-api.guesty.com/oauth2/token";
+const TOKEN_URL = "https://open-api.guesty.com/oauth2/token";
+const OPEN_API_BASE = "https://open-api.guesty.com";
 
-  // Exponential backoff up to ~1 minute, plus jitter
-  const delays = [0, 2000, 5000, 10000, 20000, 30000, 45000];
+// simple in memory token cache
+let cachedToken = null;
+let tokenExpiresAtMs = 0;
 
-  let lastErr = null;
-
-  for (let i = 0; i < delays.length; i++) {
-    const base = delays[i];
-    const jitter = Math.floor(Math.random() * 800); // 0-800ms
-    if (base > 0) await sleep(base + jitter);
-
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "client_credentials",
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
-      }),
-    });
-
-    // Respect Retry-After if present
-    if (r.status === 429) {
-      const retryAfter = r.headers.get("retry-after");
-      const text = await r.text();
-      lastErr = new Error(`Token error 429: ${text}`);
-
-      if (retryAfter) {
-        const seconds = Number(retryAfter);
-        if (Number.isFinite(seconds) && seconds > 0) {
-          await sleep(seconds * 1000);
-        }
-      }
-      continue;
-    }
-
-    const text = await r.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = { raw: text };
-    }
-
-    if (!r.ok) {
-      lastErr = new Error(`Token error ${r.status}: ${JSON.stringify(data)}`);
-      continue;
-    }
-
-    if (!data.access_token) {
-      lastErr = new Error(`Token missing access_token: ${JSON.stringify(data)}`);
-      continue;
-    }
-
-    // Cache token
-    cachedToken = data.access_token;
-    const expiresInSec = Number(data.expires_in || 3600);
-    cachedTokenExpiresAt = Date.now() + expiresInSec * 1000;
-
-    return cachedToken;
-  }
-
-  throw lastErr || new Error("Failed to get token");
+function isValidDateString(s) {
+  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 }
 
 async function getToken() {
-  if (!CLIENT_ID || !CLIENT_SECRET) {
-    throw new Error("Missing GUESTY_CLIENT_ID or GUESTY_CLIENT_SECRET in Render env vars");
+  const now = Date.now();
+  if (cachedToken && now < tokenExpiresAtMs) return cachedToken;
+
+  const body = new URLSearchParams();
+  body.append("grant_type", "client_credentials");
+  body.append("scope", "openid");
+
+  const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
+
+  const r = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${basic}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    body: body.toString(),
+  });
+
+  const text = await r.text();
+  if (!r.ok) {
+    throw new Error(`Token error ${r.status}: ${text}`);
   }
 
-  // Use cached token if valid for > 2 minutes
-  if (cachedToken && Date.now() < cachedTokenExpiresAt - 120_000) {
-    return cachedToken;
-  }
+  const json = JSON.parse(text);
+  const accessToken = json.access_token;
+  const expiresInSec = Number(json.expires_in || 1800);
 
-  // Single-flight: if a token request is already running, await it
-  if (tokenInFlight) return tokenInFlight;
-
-  tokenInFlight = (async () => {
-    try {
-      return await fetchTokenWithBackoff();
-    } finally {
-      tokenInFlight = null;
-    }
-  })();
-
-  return tokenInFlight;
+  cachedToken = accessToken;
+  tokenExpiresAtMs = Date.now() + Math.max(60, expiresInSec - 60) * 1000; // refresh 60s early
+  return cachedToken;
 }
 
-// ---------- Read-only PMC endpoint ----------
+async function fetchTransactions(from, to) {
+  const token = await getToken();
+
+  const url = new URL(`${OPEN_API_BASE}/v1/financialReports/transactions`);
+  url.searchParams.set("from", from);
+  url.searchParams.set("to", to);
+
+  const r = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    },
+  });
+
+  const text = await r.text();
+
+  if (!r.ok) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {}
+    return {
+      ok: false,
+      status: r.status,
+      raw: text,
+      parsed,
+      url: url.toString(),
+    };
+  }
+
+  const data = JSON.parse(text);
+  return { ok: true, data, url: url.toString() };
+}
+
+// health check
+app.get("/", (req, res) => {
+  res.send("Guesty PMC API running");
+});
+
+// summary endpoint
 app.get("/pmc-summary", async (req, res) => {
   try {
     const { from, to } = req.query;
-    if (!from || !to) {
-      return res.status(400).json({ error: "from and to required (YYYY-MM-DD)" });
+
+    if (!isValidDateString(from) || !isValidDateString(to)) {
+      return res.status(400).json({
+        error: "from and to required in YYYY-MM-DD format",
+        example: "/pmc-summary?from=2026-01-01&to=2026-01-14",
+      });
     }
 
-    const token = await getToken();
+    const tx = await fetchTransactions(from, to);
 
-    const r = await fetch(
-      `https://open-api.guesty.com/v1/financialReports/transactions?from=${encodeURIComponent(
-        from
-      )}&to=${encodeURIComponent(to)}&limit=100`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/json",
-        },
-      }
-    );
-
-    const text = await r.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = { raw: text };
+    if (!tx.ok) {
+      return res.status(502).json({
+        error: "Guesty transactions error",
+        data: tx,
+      });
     }
 
-    if (!r.ok) {
-      return res.status(r.status).json({ error: "Guesty transactions error", data });
-    }
+    const results = Array.isArray(tx.data?.results) ? tx.data.results : [];
+    const pmcOnly = results.filter((t) => t?.type === "PMC_COMMISSION");
 
-    const results =
-      Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : [];
+    const total = pmcOnly.reduce((sum, t) => {
+      const amount = Number(t?.amount || 0);
+      return sum + (Number.isFinite(amount) ? amount : 0);
+    }, 0);
 
-    const pmc = results.filter((t) => (t?.type || "") === "PMC_COMMISSION");
-
-    res.json({ from, to, count: pmc.length, results: pmc });
+    res.json({
+      from,
+      to,
+      count: pmcOnly.length,
+      total,
+      items: pmcOnly,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.listen(PORT, () => console.log("Server running on", PORT));
+app.listen(PORT, () => {
+  console.log(`Listening on ${PORT}`);
+});

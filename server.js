@@ -10,8 +10,14 @@ const PORT = process.env.PORT || 3000;
 const CLIENT_ID = process.env.GUESTY_CLIENT_ID;
 const CLIENT_SECRET = process.env.GUESTY_CLIENT_SECRET;
 
+/* health check */
+app.get("/", (req, res) => {
+  res.send("Guesty PMC API running");
+});
+
+/* get token — BODY ONLY (no auth header) */
 async function getToken() {
-  const res = await fetch("https://auth.guesty.com/oauth2/token", {
+  const r = await fetch("https://auth.guesty.com/oauth2/token", {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded"
@@ -23,7 +29,7 @@ async function getToken() {
     })
   });
 
-  const data = await res.json();
+  const data = await r.json();
 
   if (!data.access_token) {
     throw new Error(JSON.stringify(data));
@@ -32,19 +38,14 @@ async function getToken() {
   return data.access_token;
 }
 
-// health check
-app.get("/", (req, res) => {
-  res.send("Guesty PMC API running");
-});
-
+/* PMC summary endpoint */
 app.get("/pmc-summary", async (req, res) => {
+  const { from, to } = req.query;
+  if (!from || !to) {
+    return res.status(400).json({ error: "from and to required" });
+  }
+
   try {
-    const { from, to } = req.query;
-
-    if (!from || !to) {
-      return res.status(400).json({ error: "from and to required" });
-    }
-
     const token = await getToken();
 
     const r = await fetch(
@@ -59,7 +60,7 @@ app.get("/pmc-summary", async (req, res) => {
 
     const data = await r.json();
 
-    const pmc = (data.results || []).filter(
+    const pmc = (data?.results || []).filter(
       t => t.type === "PMC_COMMISSION"
     );
 
@@ -70,5 +71,5 @@ app.get("/pmc-summary", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Running on port ${PORT}`);
+  console.log("API running on", PORT);
 });

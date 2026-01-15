@@ -6,37 +6,43 @@ const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
+
 const CLIENT_ID = process.env.GUESTY_CLIENT_ID;
 const CLIENT_SECRET = process.env.GUESTY_CLIENT_SECRET;
 
-/* health check */
+// health check
 app.get("/", (req, res) => {
   res.send("Guesty PMC API running");
 });
 
-/* get token */
+// token fetch (READ ONLY)
 async function getToken() {
+  const body = new URLSearchParams();
+  body.append("grant_type", "client_credentials");
+
+  const auth = Buffer.from(
+    `${CLIENT_ID}:${CLIENT_SECRET}`
+  ).toString("base64");
+
   const r = await fetch("https://auth.guesty.com/oauth2/token", {
     method: "POST",
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded"
+      Authorization: `Basic ${auth}`,
+      "Content-Type": "application/x-www-form-urlencoded",
     },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET
-    })
+    body,
   });
 
-  const data = await r.json();
-  if (!data.access_token) {
-    throw new Error(JSON.stringify(data));
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(text);
   }
 
+  const data = await r.json();
   return data.access_token;
 }
 
-/* PMC summary endpoint (READ ONLY) */
+// PMC summary endpoint (READ ONLY)
 app.get("/pmc-summary", async (req, res) => {
   try {
     const { from, to } = req.query;
@@ -51,15 +57,15 @@ app.get("/pmc-summary", async (req, res) => {
       {
         headers: {
           Authorization: `Bearer ${token}`,
-          Accept: "application/json"
-        }
+          Accept: "application/json",
+        },
       }
     );
 
     const data = await r.json();
 
     const pmc = (data.results || []).filter(
-      t => t.type === "PMC_COMMISSION"
+      (t) => t.type === "PMC_COMMISSION"
     );
 
     res.json(pmc);
@@ -69,5 +75,5 @@ app.get("/pmc-summary", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Running on ${PORT}`);
+  console.log(`Server running on ${PORT}`);
 });

@@ -10,29 +10,29 @@ const PORT = process.env.PORT || 3000;
 const CLIENT_ID = process.env.GUESTY_CLIENT_ID;
 const CLIENT_SECRET = process.env.GUESTY_CLIENT_SECRET;
 
-// health check
-app.get("/", (req, res) => {
-  res.send("Guesty PMC API running");
-});
-
-// get access token
+/* get Guesty token */
 async function getToken() {
-  const res = await fetch("https://auth.guesty.com/oauth2/token", {
+  const r = await fetch("https://open-api.guesty.com/oauth2/token", {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
       grant_type: "client_credentials",
       client_id: CLIENT_ID,
       client_secret: CLIENT_SECRET
     })
   });
 
-  const data = await res.json();
+  const data = await r.json();
   return data.access_token;
 }
 
-// PMC commission endpoint
-app.get("/pmc", async (req, res) => {
+/* health check */
+app.get("/", (req, res) => {
+  res.send("Guesty PMC API running");
+});
+
+/* PMC commissions only */
+app.get("/commissions", async (req, res) => {
   try {
     const { from, to } = req.query;
     if (!from || !to) {
@@ -53,7 +53,6 @@ app.get("/pmc", async (req, res) => {
 
     const data = await r.json();
 
-    // ONLY PMC commissions
     const pmc = data.results.filter(
       t => t.type === "PMC_COMMISSION"
     );

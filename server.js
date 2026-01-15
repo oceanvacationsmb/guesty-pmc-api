@@ -6,67 +6,80 @@ const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
-
 const CLIENT_ID = process.env.GUESTY_CLIENT_ID;
 const CLIENT_SECRET = process.env.GUESTY_CLIENT_SECRET;
 
-// health check
+// Optional extra safety: block any non-GET requests to your API
+app.use((req, res, next) => {
+  const m = req.method.toUpperCase();
+  if (m !== "GET" && m !== "HEAD" && m !== "OPTIONS") {
+    return res.status(405).send("Method not allowed");
+  }
+  next();
+});
+
 app.get("/", (req, res) => {
   res.send("Guesty PMC API running");
 });
 
-// token fetch (READ ONLY)
 async function getToken() {
-  const body = new URLSearchParams();
-  body.append("grant_type", "client_credentials");
-
-  const auth = Buffer.from(
-    `${CLIENT_ID}:${CLIENT_SECRET}`
-  ).toString("base64");
-
-  const r = await fetch("https://auth.guesty.com/oauth2/token", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body,
-  });
-
-  if (!r.ok) {
-    const text = await r.text();
-    throw new Error(text);
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    throw new Error("Missing GUESTY_CLIENT_ID or GUESTY_CLIENT_SECRET in Render env vars");
   }
 
-  const data = await r.json();
+  // IMPORTANT: correct token endpoint
+  const r = await fetch("https://open-api.guesty.com/oauth2/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET
+    })
+  });
+
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+  if (!r.ok) {
+    throw new Error(`Token error ${r.status}: ${JSON.stringify(data)}`);
+  }
+
+  if (!data.access_token) {
+    throw new Error(`Token missing access_token: ${JSON.stringify(data)}`);
+  }
+
   return data.access_token;
 }
 
-// PMC summary endpoint (READ ONLY)
 app.get("/pmc-summary", async (req, res) => {
   try {
     const { from, to } = req.query;
-    if (!from || !to) {
-      return res.status(400).json({ error: "from and to required" });
-    }
+    if (!from || !to) return res.status(400).json({ error: "from and to required (YYYY-MM-DD)" });
 
     const token = await getToken();
 
     const r = await fetch(
-      `https://open-api.guesty.com/v1/financialReports/transactions?from=${from}&to=${to}`,
+      `https://open-api.guesty.com/v1/financialReports/transactions?from=${from}&to=${to}&limit=100`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
-          Accept: "application/json",
-        },
+          Accept: "application/json"
+        }
       }
     );
 
-    const data = await r.json();
+    const text = await r.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
-    const pmc = (data.results || []).filter(
-      (t) => t.type === "PMC_COMMISSION"
-    );
+    if (!r.ok) {
+      return res.status(r.status).json({ error: "Guesty transactions error", data });
+    }
+
+    const results = Array.isArray(data?.results) ? data.results : [];
+    const pmc = results.filter(t => (t?.type || "") === "PMC_COMMISSION");
 
     res.json(pmc);
   } catch (e) {
@@ -74,6 +87,4 @@ app.get("/pmc-summary", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on ${PORT}`);
-});
+app.listen(PORT, () => console.log("Server running on", PORT));

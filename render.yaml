@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: guesty-pmc-sales-commission
-    env: node
-    plan: starter
-    buildCommand: npm install
-    startCommand: npm start

@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sales Commission Statement</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .row { margin-bottom: 10px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 15px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background: #f4f4f4; }
+    .totals { margin-top: 12px; font-weight: bold; }
+    .error { color: #b00020; margin-top: 12px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h2>Sales Commission Statement</h2>
+
+  <div class="row">
+    From <input id="from" type="date" />
+    To <input id="to" type="date" />
+    <button id="run">Run</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="error" class="error"></div>
+
+  <table id="tbl" style="display:none">
+    <thead>
+      <tr>
+        <th>Property</th>
+        <th>PMC Total</th>
+        <th>Sales %</th>
+        <th>Sales Commission</th>
+      </tr>
+    </thead>
+    <tbody id="body"></tbody>
+  </table>
+
+  <div id="totals" class="totals"></div>
+
+  <script>
+    const API_BASE = ""; 
+    // If you host this HTML on Guesty Website Builder, set API_BASE to your Render URL like:
+    // const API_BASE = "https://YOUR-RENDER-SERVICE.onrender.com";
+
+    const statusEl = document.getElementById("status");
+    const errEl = document.getElementById("error");
+    const tbl = document.getElementById("tbl");
+    const body = document.getElementById("body");
+    const totals = document.getElementById("totals");
+
+    function money(x) {
+      return Number(x || 0).toLocaleString(undefined, { style: "currency", currency: "USD" });
+    }
+    function pct(x) {
+      return (Number(x || 0) * 100).toFixed(2) + "%";
+    }
+
+    document.getElementById("run").addEventListener("click", async () => {
+      errEl.textContent = "";
+      totals.textContent = "";
+      body.innerHTML = "";
+      tbl.style.display = "none";
+
+      const from = document.getElementById("from").value;
+      const to = document.getElementById("to").value;
+
+      if (!from || !to) {
+        errEl.textContent = "Pick from and to dates";
+        return;
+      }
+
+      statusEl.textContent = "Loading...";
+      try {
+        const url = `${API_BASE}/commissions?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(JSON.stringify(data, null, 2));
+        }
+
+        const props = data.summary.properties || [];
+        for (const p of props) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${p.propertyKey}</td>
+            <td>${money(p.pmcTotal)}</td>
+            <td>${pct(p.salesRate)}</td>
+            <td>${money(p.salesCommission)}</td>
+          `;
+          body.appendChild(tr);
+        }
+
+        tbl.style.display = "table";
+        totals.textContent = `Total PMC: ${money(data.summary.totals.pmcTotal)}   Total Sales Commission: ${money(data.summary.totals.salesCommission)}`;
+        statusEl.textContent = "Done";
+      } catch (e) {
+        statusEl.textContent = "";
+        errEl.textContent = String(e.message || e);
+      }
+    });
+  </script>
+</body>
+</html>

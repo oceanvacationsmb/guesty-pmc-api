@@ -1,177 +1,269 @@
 import express from "express";
-import fetch from "node-fetch";
-import cors from "cors";
 
 const app = express();
-app.use(cors());
+app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-const CLIENT_ID = process.env.GUESTY_CLIENT_ID;
-const CLIENT_SECRET = process.env.GUESTY_CLIENT_SECRET;
-
-if (!CLIENT_ID || !CLIENT_SECRET) {
-  console.error("Missing env vars: GUESTY_CLIENT_ID / GUESTY_CLIENT_SECRET");
-}
+/*
+ENV VARS YOU MUST SET ON RENDER
+GUESTY_CLIENT_ID
+GUESTY_CLIENT_SECRET
+*/
 
 const TOKEN_URL = "https://open-api.guesty.com/oauth2/token";
-const TRANSACTIONS_URL = "https://open-api.guesty.com/v1/financialReports/transactions";
+const OAPI_BASE = "https://open-api.guesty.com/v1";
 
-let cachedToken = null; // { access_token, expires_at_ms }
-
-function toBasicAuth(id, secret) {
-  return Buffer.from(`${id}:${secret}`).toString("base64");
-}
+let tokenCache = {
+  accessToken: null,
+  expiresAtMs: 0
+};
 
 function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function getToken() {
-  const now = Date.now();
+async function fetchToken() {
+  const clientId = process.env.GUESTY_CLIENT_ID;
+  const clientSecret = process.env.GUESTY_CLIENT_SECRET;
 
-  if (cachedToken?.access_token && cachedToken?.expires_at_ms && now < cachedToken.expires_at_ms) {
-    return cachedToken.access_token;
+  if (!clientId || !clientSecret) {
+    throw new Error("Missing env vars GUESTY_CLIENT_ID or GUESTY_CLIENT_SECRET");
+  }
+
+  const now = Date.now();
+  if (tokenCache.accessToken && now < tokenCache.expiresAtMs - 60_000) {
+    return tokenCache.accessToken;
   }
 
   const body = new URLSearchParams();
   body.set("grant_type", "client_credentials");
   body.set("scope", "open-api");
+  body.set("client_id", clientId);
+  body.set("client_secret", clientSecret);
 
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${toBasicAuth(CLIENT_ID, CLIENT_SECRET)}`,
-      "Content-Type": "application/x-www-form-urlencoded"
-    },
-    body
-  });
+  let lastErr = null;
 
-  const text = await res.text();
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const res = await fetch(TOKEN_URL, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body
+      });
 
-  if (!res.ok) {
-    throw new Error(`Token error ${res.status}: ${text}`);
+      const text = await res.text();
+      let json;
+      try { json = JSON.parse(text); } catch { json = { raw: text }; }
+
+      if (!res.ok) {
+        if (res.status === 429) {
+          const backoffMs = 1000 * attempt * attempt;
+          await sleep(backoffMs);
+          lastErr = new Error(`Token error 429: ${text}`);
+          continue;
+        }
+        throw new Error(`Token error ${res.status}: ${text}`);
+      }
+
+      const accessToken = json.access_token;
+      const expiresIn = Number(json.expires_in || 3600);
+
+      tokenCache.accessToken = accessToken;
+      tokenCache.expiresAtMs = Date.now() + expiresIn * 1000;
+
+      return accessToken;
+    } catch (e) {
+      lastErr = e;
+      await sleep(250 * attempt);
+    }
   }
 
-  const json = JSON.parse(text);
-
-  const expiresInSec = Number(json.expires_in || 3600);
-  cachedToken = {
-    access_token: json.access_token,
-    expires_at_ms: Date.now() + (expiresInSec - 60) * 1000
-  };
-
-  return cachedToken.access_token;
+  throw lastErr || new Error("Token fetch failed");
 }
 
-async function fetchGuestyTransactions({ from, to }) {
-  const token = await getToken();
+function parseISODate(value, name) {
+  if (!value) throw new Error(`Missing query param: ${name}`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error(`Invalid ${name}. Use YYYY-MM-DD`);
+  return value;
+}
 
-  const url = new URL(TRANSACTIONS_URL);
+/*
+You configure sales commission per property here.
+KEY must match listing id (preferred) OR listing nickname/title (fallback).
+Examples:
+"65a1b2c3d4e5f6a7b8c9d0e1": 0.10
+"Beach House 7BR": 0.05
+*/
+const SALES_RATE_MAP = {
+  // "LISTING_ID_HERE": 0.10,
+  // "ANOTHER_LISTING_ID": 0.05
+};
+
+/*
+Goal
+Return PMC totals per property for a date range, then compute sales commission
+PMC total = sum of journal lines that represent PMC income
+This uses Guesty Accounting endpoints (accounting add-on users).
+Docs show journal entries endpoint exists. :contentReference[oaicite:5]{index=5}
+*/
+async function fetchJournalEntries(token, from, to) {
+  const url = new URL(`${OAPI_BASE}/accounting-api/journal-entries/all`);
+
   url.searchParams.set("from", from);
   url.searchParams.set("to", to);
 
   const res = await fetch(url.toString(), {
     method: "GET",
     headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json"
+      "accept": "application/json",
+      "authorization": `Bearer ${token}`
     }
   });
 
-  const contentType = res.headers.get("content-type") || "";
-  const raw = await res.text();
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { json = { raw: text }; }
 
   if (!res.ok) {
-    throw new Error(`Guesty transactions error ${res.status}: ${raw}`);
+    const msg = typeof json === "object" ? JSON.stringify(json) : String(text);
+    throw new Error(`Guesty journal entries error ${res.status}: ${msg}`);
   }
 
-  if (!contentType.includes("application/json")) {
-    throw new Error(`Guesty transactions error: non-JSON response: ${raw}`);
+  return json;
+}
+
+function normalizeNumber(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/*
+This is intentionally defensive because accounting payloads differ per account.
+We look for amounts and a listing identifier inside each entry line.
+We only count lines that look like PMC income (keywords).
+*/
+function extractPmcByProperty(journalPayload) {
+  const rows = [];
+
+  const items = Array.isArray(journalPayload?.results)
+    ? journalPayload.results
+    : Array.isArray(journalPayload)
+      ? journalPayload
+      : Array.isArray(journalPayload?.data)
+        ? journalPayload.data
+        : [];
+
+  for (const entry of items) {
+    const lines = Array.isArray(entry?.lines) ? entry.lines : Array.isArray(entry?.entries) ? entry.entries : [];
+
+    for (const line of lines) {
+      const blob = JSON.stringify(line).toLowerCase();
+
+      const looksLikePmc =
+        blob.includes("pmc") ||
+        blob.includes("property management") ||
+        blob.includes("management fee") ||
+        blob.includes("management commission") ||
+        blob.includes("pmc commission");
+
+      if (!looksLikePmc) continue;
+
+      const amount =
+        normalizeNumber(line.amount) ||
+        normalizeNumber(line.total) ||
+        normalizeNumber(line.value) ||
+        normalizeNumber(line.credit) ||
+        0;
+
+      if (!amount) continue;
+
+      const listingId =
+        line.listingId ||
+        line.propertyId ||
+        line.listing?.id ||
+        entry.listingId ||
+        entry.propertyId ||
+        entry.listing?.id ||
+        null;
+
+      const listingName =
+        line.listingName ||
+        line.propertyName ||
+        line.listing?.title ||
+        entry.listingName ||
+        entry.propertyName ||
+        entry.listing?.title ||
+        null;
+
+      const key = listingId || listingName || "UNKNOWN";
+
+      rows.push({
+        key,
+        listingId: listingId || null,
+        listingName: listingName || null,
+        amount
+      });
+    }
   }
 
-  return JSON.parse(raw);
+  const totals = new Map();
+  for (const r of rows) {
+    totals.set(r.key, (totals.get(r.key) || 0) + r.amount);
+  }
+
+  const result = [];
+  for (const [key, pmcTotal] of totals.entries()) {
+    const rate = SALES_RATE_MAP[key] ?? 0;
+    result.push({
+      propertyKey: key,
+      pmcTotal: Number(pmcTotal.toFixed(2)),
+      salesRate: rate,
+      salesCommission: Number((pmcTotal * rate).toFixed(2))
+    });
+  }
+
+  result.sort((a, b) => b.pmcTotal - a.pmcTotal);
+  const grandPMC = result.reduce((s, x) => s + x.pmcTotal, 0);
+  const grandSales = result.reduce((s, x) => s + x.salesCommission, 0);
+
+  return {
+    properties: result,
+    totals: {
+      pmcTotal: Number(grandPMC.toFixed(2)),
+      salesCommission: Number(grandSales.toFixed(2))
+    }
+  };
 }
 
-function parseDateParam(value) {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
-}
-
-app.get("/", (req, res) => {
-  res.send("Guesty PMC API running");
+app.get("/health", (req, res) => {
+  res.json({ ok: true, mode: "READ_ONLY" });
 });
 
+/*
+This is the route your webpage should call
+GET /commissions?from=YYYY-MM-DD&to=YYYY-MM-DD
+*/
 app.get("/commissions", async (req, res) => {
   try {
-    const { from, to } = req.query;
+    const from = parseISODate(req.query.from, "from");
+    const to = parseISODate(req.query.to, "to");
 
-    if (!parseDateParam(from) || !parseDateParam(to)) {
-      return res.status(400).json({ error: "from and to are required in YYYY-MM-DD format" });
-    }
+    const token = await fetchToken();
+    const journal = await fetchJournalEntries(token, from, to);
+    const summary = extractPmcByProperty(journal);
 
-    const data = await fetchGuestyTransactions({ from, to });
-
-    const results = Array.isArray(data?.results) ? data.results : [];
-    const pmc = results.filter((t) => t?.type === "PMC_COMMISSION");
-
-    return res.json(pmc);
-  } catch (e) {
-    const msg = String(e?.message || e);
-
-    if (msg.includes("Token error 429")) {
-      return res.status(429).json({
-        error: "Token rate limited by Guesty (429). Stop retrying and wait. Your code now caches tokens to avoid this.",
-        details: msg
-      });
-    }
-
-    return res.status(500).json({ error: msg });
-  }
-});
-
-app.get("/pmc-summary", async (req, res) => {
-  try {
-    const { from, to } = req.query;
-
-    if (!parseDateParam(from) || !parseDateParam(to)) {
-      return res.status(400).json({ error: "from and to are required in YYYY-MM-DD format" });
-    }
-
-    const data = await fetchGuestyTransactions({ from, to });
-
-    const results = Array.isArray(data?.results) ? data.results : [];
-    const pmc = results.filter((t) => t?.type === "PMC_COMMISSION");
-
-    const total = pmc.reduce((sum, t) => {
-      const val =
-        Number(t?.amount) ||
-        Number(t?.netAmount) ||
-        Number(t?.value) ||
-        0;
-      return sum + val;
-    }, 0);
-
-    return res.json({
+    res.json({
       from,
       to,
-      count: pmc.length,
-      total,
-      items: pmc
+      readOnly: true,
+      summary
     });
   } catch (e) {
-    const msg = String(e?.message || e);
-
-    if (msg.includes("Token error 429")) {
-      return res.status(429).json({
-        error: "Token rate limited by Guesty (429). Stop retrying and wait. Your code now caches tokens to avoid this.",
-        details: msg
-      });
-    }
-
-    return res.status(500).json({ error: msg });
+    res.status(500).json({ error: String(e.message || e) });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Listening on ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });

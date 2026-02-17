@@ -7,74 +7,68 @@ dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-const CLIENT_ID = process.env.GUESTY_CLIENT_ID;
-const CLIENT_SECRET = process.env.GUESTY_CLIENT_SECRET;
+/* =====================================================
+   TOKEN CACHE
+===================================================== */
 
 let accessToken = null;
 let tokenExpiresAt = 0;
 
-/* ===========================
-   GET ACCESS TOKEN (SAFE)
-===========================*/
 async function getAccessToken() {
-
   const now = Date.now();
 
-  // ✅ Reuse token if still valid
+  // If token still valid, reuse it
   if (accessToken && now < tokenExpiresAt) {
     return accessToken;
   }
 
-  console.log("Requesting new Guesty token...");
-
   try {
     const response = await axios.post(
       "https://open-api.guesty.com/oauth2/token",
-      new URLSearchParams({
-        grant_type: "client_credentials"
-      }),
       {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded"
-        },
-        auth: {
-          username: CLIENT_ID,
-          password: CLIENT_SECRET
-        }
+        grant_type: "client_credentials",
+        client_id: process.env.GUESTY_CLIENT_ID,
+        client_secret: process.env.GUESTY_CLIENT_SECRET
       }
     );
 
     accessToken = response.data.access_token;
 
-    // expire 1 minute earlier for safety
+    // expires_in comes in seconds
     tokenExpiresAt = now + (response.data.expires_in - 60) * 1000;
 
-    console.log("Token acquired successfully");
+    console.log("New Guesty token generated");
 
     return accessToken;
 
-  } catch (err) {
-    console.error("Token error:", err.response?.data || err.message);
+  } catch (error) {
+    console.error("Token error:", error.response?.data || error.message);
     throw new Error("Failed to get Guesty token");
   }
 }
 
-/* ===========================
+/* =====================================================
+   HEALTH CHECK
+===================================================== */
+
+app.get("/", (req, res) => {
+  res.send("Guesty PMC API running");
+});
+
+/* =====================================================
    RESERVATIONS ENDPOINT
-===========================*/
+===================================================== */
+
 app.get("/reservations", async (req, res) => {
-
-  const { from, to } = req.query;
-
-  if (!from || !to) {
-    return res.status(400).json({ error: "Missing from/to dates" });
-  }
-
   try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ error: "Missing from/to dates" });
+    }
 
     const token = await getAccessToken();
 
@@ -87,30 +81,23 @@ app.get("/reservations", async (req, res) => {
         params: {
           checkInFrom: from,
           checkInTo: to,
-          limit: 200
+          include: "financials"
         }
       }
     );
 
-    return res.json(response.data.results || []);
+    res.json(response.data);
 
-  } catch (err) {
-
-    console.error("Guesty error:", err.response?.data || err.message);
-    return res.status(500).json({ error: "Failed to fetch reservations" });
+  } catch (error) {
+    console.error("Server error:", error.response?.data || error.message);
+    res.status(500).json({ error: "Failed to fetch reservations" });
   }
 });
 
-/* ===========================
-   ROOT
-===========================*/
-app.get("/", (req, res) => {
-  res.send("Guesty PMC API running");
-});
-
-/* ===========================
+/* =====================================================
    START SERVER
-===========================*/
+===================================================== */
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });

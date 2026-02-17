@@ -1,7 +1,9 @@
-const express = require("express");
-const axios = require("axios");
-const cors = require("cors");
-require("dotenv").config();
+import express from "express";
+import axios from "axios";
+import cors from "cors";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const app = express();
 
@@ -14,7 +16,13 @@ app.use(express.json());
 let accessToken = null;
 let expiresAt = 0;
 
+/* =========================
+   GET ACCESS TOKEN
+========================= */
+
 async function getAccessToken() {
+
+  // If token still valid, reuse it
   if (accessToken && Date.now() < expiresAt) {
     return accessToken;
   }
@@ -34,17 +42,29 @@ async function getAccessToken() {
   );
 
   accessToken = response.data.access_token;
-  expiresAt = Date.now() + (response.data.expires_in - 60) * 1000;
+
+  // expires_in is in seconds
+  expiresAt = Date.now() + (response.data.expires_in * 1000);
 
   return accessToken;
 }
 
+/* =========================
+   RESERVATIONS ENDPOINT
+========================= */
+
 app.get("/reservations", async (req, res) => {
+
   try {
-    const { from, to } = req.query;
+
+    const { from, to, statementUrl } = req.query;
 
     if (!from || !to) {
-      return res.status(400).json({ error: "Missing from or to date" });
+      return res.status(400).json({ error: "Missing from/to dates" });
+    }
+
+    if (!statementUrl) {
+      return res.status(400).json({ error: "Missing statementUrl" });
     }
 
     const token = await getAccessToken();
@@ -56,20 +76,31 @@ app.get("/reservations", async (req, res) => {
           Authorization: `Bearer ${token}`
         },
         params: {
-          checkInDate: from,
-          checkOutDate: to
+          checkInFrom: from,
+          checkInTo: to,
+          statementId: statementUrl
         }
       }
     );
 
     res.json(response.data);
-  } catch (error) {
-    console.error(error.response?.data || error.message);
-    res.status(500).json({ error: "Failed to fetch reservations" });
+
+  } catch (err) {
+
+    console.error(err.response?.data || err.message);
+
+    res.status(500).json({
+      error: "Failed to fetch reservations"
+    });
   }
 });
 
-const PORT = process.env.PORT || 10000;
+/* =========================
+   START SERVER
+========================= */
+
+const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+  console.log(`Server running on port ${PORT}`);
 });

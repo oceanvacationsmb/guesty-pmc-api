@@ -51,8 +51,9 @@ async function getAccessToken() {
 /* =========================
    RESERVATIONS ENDPOINT
 ========================= */
-console.log("Incoming request:", req.query);
 app.get("/reservations", async (req, res) => {
+
+  console.log("Incoming request:", req.query);
 
   try {
 

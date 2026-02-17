@@ -14,7 +14,7 @@ app.use(express.json());
 let accessToken = null;
 let expiresAt = 0;
 
-async function getValidToken() {
+async function getAccessToken() {
   if (accessToken && Date.now() < expiresAt) {
     return accessToken;
   }
@@ -22,26 +22,32 @@ async function getValidToken() {
   const response = await axios.post(
     "https://open-api.guesty.com/oauth2/token",
     new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: process.env.GUESTY_REFRESH_TOKEN,
+      grant_type: "client_credentials",
       client_id: process.env.GUESTY_CLIENT_ID,
-      client_secret: process.env.GUESTY_CLIENT_SECRET,
+      client_secret: process.env.GUESTY_CLIENT_SECRET
     }),
     {
-      headers: { "Content-Type": "application/x-www-form-urlencoded" }
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      }
     }
   );
 
   accessToken = response.data.access_token;
-  expiresAt = Date.now() + (response.data.expires_in * 1000);
+  expiresAt = Date.now() + (response.data.expires_in - 60) * 1000;
 
   return accessToken;
 }
 
 app.get("/reservations", async (req, res) => {
   try {
-    const token = await getValidToken();
     const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ error: "Missing from or to date" });
+    }
+
+    const token = await getAccessToken();
 
     const response = await axios.get(
       "https://open-api.guesty.com/v1/reservations",
@@ -50,25 +56,20 @@ app.get("/reservations", async (req, res) => {
           Authorization: `Bearer ${token}`
         },
         params: {
-          checkInFrom: from,
-          checkInTo: to,
-          limit: 200
+          checkInDate: from,
+          checkOutDate: to
         }
       }
     );
 
     res.json(response.data);
-
-  } catch (err) {
-    console.log(err.response?.data || err.message);
-    res.status(500).json({
-      error: err.response?.data || err.message
-    });
+  } catch (error) {
+    console.error(error.response?.data || error.message);
+    res.status(500).json({ error: "Failed to fetch reservations" });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log("Server running on port " + PORT);
 });

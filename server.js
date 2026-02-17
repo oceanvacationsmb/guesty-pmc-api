@@ -18,7 +18,7 @@ let expiresAt = 0;
 /* =========================
    GET ACCESS TOKEN
 ========================= */
-
+await new Promise(resolve => setTimeout(resolve, 1200));
 async function getAccessToken() {
 
   // If token still valid, reuse it

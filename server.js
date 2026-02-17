@@ -2,7 +2,6 @@ import express from "express";
 import axios from "axios";
 import cors from "cors";
 import dotenv from "dotenv";
-
 dotenv.config();
 
 const app = express();
@@ -52,7 +51,7 @@ async function getAccessToken() {
 /* =========================
    RESERVATIONS ENDPOINT
 ========================= */
-
+console.log("Incoming request:", req.query);
 app.get("/reservations", async (req, res) => {
 
   try {

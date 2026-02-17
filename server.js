@@ -137,6 +137,10 @@ app.get("/", (req, res) => {
 /* ===============================
    START SERVER
 =================================*/
+app.get("/", (req, res) => {
+  res.send("Guesty PMC API running");
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });

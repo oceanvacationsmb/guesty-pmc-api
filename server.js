@@ -64,7 +64,7 @@ app.get("/reservations", async (req, res) => {
     }
 
     const token = await getAccessToken();
-
+    await new Promise(resolve => setTimeout(resolve, 2000));
     const response = await axios.get(
       "https://open-api.guesty.com/v1/reservations",
       {

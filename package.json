@@ -3,9 +3,8 @@
   "version": "1.0.0",
   "description": "Guesty API Proxy for Ocean Vacations",
   "main": "server.js",
-  "type": "module",
   "scripts": {
-    "start": "node server.js"
+  "start": "node server.js"
   },
   "dependencies": {
     "axios": "^1.6.0",

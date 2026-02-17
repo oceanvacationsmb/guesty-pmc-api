@@ -57,14 +57,10 @@ app.get("/reservations", async (req, res) => {
 
   try {
 
-    const { from, to, statementUrl } = req.query;
+    const { from, to } = req.query;
 
     if (!from || !to) {
       return res.status(400).json({ error: "Missing from/to dates" });
-    }
-
-    if (!statementUrl) {
-      return res.status(400).json({ error: "Missing statementUrl" });
     }
 
     const token = await getAccessToken();
